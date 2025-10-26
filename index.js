@@ -6,7 +6,8 @@ const { promises: fs } = require("fs");
 const fsExtra = require("fs-extra");
 const puppeteer = require("puppeteer");
 const { CronJob } = require("cron");
-const gm = require("gm");
+const spawn = require("cross-spawn");
+// const gm = require("gm");
 
 // keep state of current battery level and whether the device is charging
 const batteryStore = {};
@@ -294,36 +295,103 @@ async function renderUrlToImageAsync(browser, pageConfig, url, path) {
   }
 }
 
-function convertImageToKindleCompatiblePngAsync(
-  pageConfig,
-  inputPath,
-  outputPath
-) {
+function convertImageToKindleCompatiblePngAsync(pageConfig, inputPath, outputPath) {
   return new Promise((resolve, reject) => {
-    let gmInstance = gm(inputPath)
-      .options({
-        imageMagick: config.useImageMagick === true
-      })
-      .gamma(pageConfig.removeGamma ? 1.0 / 2.2 : 1.0)
-      .modulate(100, 100 * pageConfig.saturation)
-      .contrast(pageConfig.contrast)
-      .dither(pageConfig.dither)
-      .rotate("white", pageConfig.rotation)
-      .type(pageConfig.colorMode)
-      .level(pageConfig.blackLevel, pageConfig.whiteLevel)
-      .bitdepth(pageConfig.grayscaleDepth);
+    const args = ["convert"];
 
-    // For BMP format, we don't set quality since it's not applicable
-    if (pageConfig.imageFormat !== 'bmp') {
-      gmInstance = gmInstance.quality(100);
+    // Input file
+    args.push(inputPath);
+
+    // Gamma correction
+    const gamma = pageConfig.removeGamma ? 1.0 / 2.2 : 1.0;
+    args.push("-gamma", String(gamma));
+
+    // Modulate: brightness,saturation,hue
+    const saturation = Math.round(100 * pageConfig.saturation);
+    args.push("-modulate", `100,${saturation},100`);
+
+    // Contrast (apply multiple times if needed)
+    if (pageConfig.contrast !== undefined && pageConfig.contrast !== 0) {
+      const count = Math.abs(Math.round(pageConfig.contrast));
+      const flag = pageConfig.contrast > 0 ? "-contrast" : "+contrast";
+      for (let i = 0; i < count; i++) args.push(flag);
     }
-    
-    gmInstance.write(outputPath, (err) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve();
-      }
+
+    // Dithering
+    // pageConfig.dither
+    args.push("-dither", "FloydSteinberg");
+    args.push("-black-threshold", "40%");
+    args.push("-remap", "pattern:gray50")
+
+    // Rotation (with white background)
+    if (pageConfig.rotation) {
+      args.push("-background", "white", "-rotate", String(pageConfig.rotation));
+    }
+
+    // Color type (e.g., TrueColor, Grayscale, Palette)
+    if (pageConfig.colorMode) {
+      args.push("-type", pageConfig.colorMode);
+    }
+
+    // Level adjustment
+    if (pageConfig.blackLevel !== undefined && pageConfig.whiteLevel !== undefined) {
+      args.push("-level", `${pageConfig.blackLevel},${pageConfig.whiteLevel}`);
+    }
+
+    // Bit depth
+    if (pageConfig.grayscaleDepth !== undefined) {
+      args.push("-depth", String(pageConfig.grayscaleDepth));
+    }
+
+    // Quality (skip for BMP)
+    if (pageConfig.imageFormat?.toLowerCase() !== "bmp") {
+      args.push("-quality", "100");
+    }
+
+    // Output file
+    args.push(outputPath);
+
+    // Spawn ImageMagick process
+    const proc = spawn("magick", args, { stdio: "inherit" });
+
+    proc.on("error", (err) => reject(err));
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`magick exited with code ${code}`));
     });
   });
 }
+
+// function convertImageToKindleCompatiblePngAsync(
+//   pageConfig,
+//   inputPath,
+//   outputPath
+// ) {
+//   return new Promise((resolve, reject) => {
+//     let gmInstance = gm(inputPath)
+//       .options({
+//         imageMagick: config.useImageMagick === true
+//       })
+//       .gamma(pageConfig.removeGamma ? 1.0 / 2.2 : 1.0)
+//       .modulate(100, 100 * pageConfig.saturation)
+//       .contrast(pageConfig.contrast)
+//       .dither("FloydSteinberg")
+//       .rotate("white", pageConfig.rotation)
+//       .type(pageConfig.colorMode)
+//       .level(pageConfig.blackLevel, pageConfig.whiteLevel)
+//       .bitdepth(pageConfig.grayscaleDepth);
+
+//     // For BMP format, we don't set quality since it's not applicable
+//     if (pageConfig.imageFormat !== 'bmp') {
+//       gmInstance = gmInstance.quality(100);
+//     }
+    
+//     gmInstance.write(outputPath, (err) => {
+//       if (err) {
+//         reject(err);
+//       } else {
+//         resolve();
+//       }
+//     });
+//   });
+// }
